@@ -8,17 +8,29 @@ import (
 	"log"
 	"os"
 	"io"
+	"strconv"
 )
-var accounts []string
 
 func main() {
-	accounts = append(accounts, "https://www.instagram.com/elonmusk/")
+
 	fmt.Println("Crawler starting")
 
-	for _, element := range accounts {
+	for _, element := range getConfig() {
 		crawl(element)
 	}
 	fmt.Println("Crawler finished")
+}
+
+func getConfig()(accounts []string)  {
+	b, err := ioutil.ReadFile("config.txt")
+	if err != nil {
+		fmt.Print("Couldn't read config.txt")
+	}
+	for _, element := range strings.Split(string(b),",") {
+		accounts = append(accounts, element)
+	}
+	fmt.Println("Found " + strconv.Itoa(len(accounts)) + " Accounts to crawl")
+	return accounts
 }
 
 func crawl(url string)  {
@@ -44,7 +56,6 @@ func crawl(url string)  {
 }
 
 func archive(pictureurl string, username string)  {
-	//fmt.Println("saving " + pictureurl + " from " + username)
 	if !alreadySaved(username + "/" + strings.Split(pictureurl,"/")[len(strings.Split(pictureurl,"/")) - 1]) {
 		save(pictureurl, username)
 	}
