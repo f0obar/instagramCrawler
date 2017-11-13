@@ -70,14 +70,64 @@ func crawl(url string)  {
 	}
 	str := fmt.Sprintf("%s", html)
 	chunks := strings.Split(str,",")
+
+	crawlSubImages := false
+
 	for _, element := range chunks {
-		if(strings.HasPrefix(element," " + `"` + "display_src")) {
+		/*
+		When media preview is null the image actually is a gallery
+		 */
+		if strings.HasPrefix(element," " + `"` + "media_preview") {
+			mediaType := strings.TrimLeft(element," " + `"` + "media_preview" + `"` + ": ")
+			if mediaType == "null"{
+				crawlSubImages = true
+			}
+		}
+		/*
+		Code tag for gallery id to crawl containing images
+		 */
+		if strings.HasPrefix(element," " + `"` + "code") && crawlSubImages {
+			crawlSubImages = false
+			id := strings.TrimLeft(element," " + `"` + "code" + `"` + ": " + `"`)
+			id = strings.TrimRight(id,`"`)
+			crawlSub(id,strings.Split(url,"/")[3])
+		}
+		/*
+		Simple image, save directly.
+		 */
+		if strings.HasPrefix(element," " + `"` + "display_src") && crawlSubImages == false{
 			pic := strings.TrimLeft(element," " + `"` + "display_src: " + `"`)
 			pic = strings.TrimRight(pic,`"`)
 			archive(pic,strings.Split(url,"/")[3])
 		}
 	}
 }
+
+
+func crawlSub(id string, username string){
+	fmt.Println("NEED TO CRAWL GALLERY", "https://www.instagram.com/p/" + id)
+	resp, err := http.Get("https://www.instagram.com/p/" + id)
+	defer resp.Body.Close()
+
+	if err != nil {
+		panic(err)
+	}
+	html, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+
+	str := fmt.Sprintf("%s", html)
+	chunks := strings.Split(str,",")
+	for _, element := range chunks {
+		if strings.HasPrefix(element," " + `"` + "display_url") {
+			pic := strings.TrimLeft(element," " + `"` + "display_url: " + `"`)
+			pic = strings.TrimRight(pic,`"`)
+			archive(pic,username)
+		}
+	}
+}
+
 
 func archive(pictureurl string, username string)  {
 	if !alreadySaved(username + "/" + strings.Split(pictureurl,"/")[len(strings.Split(pictureurl,"/")) - 1]) {
