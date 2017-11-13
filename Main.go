@@ -17,10 +17,18 @@ func main() {
 
 	config := getConfig()
 	interval := -1
+	pagesToCrawlBack := 0
 
 	if num, err := strconv.Atoi(config[0]); err == nil {
 		interval = num
 		fmt.Println("Setting repeat interval to " + config[0] + " seconds")
+		config = append(config[:0], config[1:]...)
+	} else if strings.HasPrefix(config[0],"P") {
+		pagesToCrawlBack, err = strconv.Atoi(strings.TrimLeft(config[0],"P"))
+		if(err != nil){
+			panic(err)
+		}
+		fmt.Println("Crawlback mode: " + config[0] + " Pages")
 		config = append(config[:0], config[1:]...)
 	}
 	fmt.Println("Found " + strconv.Itoa(len(config)) + " Accounts to crawl")
@@ -31,14 +39,14 @@ func main() {
 		for {
 			fmt.Println(">>CRAWLING<<")
 			for _, element := range config {
-				crawl(element)
+				crawl(element,pagesToCrawlBack)
 			}
 			fmt.Println(">>CRAWLING FINISHED, next crawling will start in " + strconv.Itoa(interval) + " seconds<<")
 			<-t.C
 		}
 	} else {
 		for _, element := range config {
-			crawl(element)
+			crawl(element,pagesToCrawlBack)
 		}
 		fmt.Println("Crawler finished")
 	}
@@ -56,7 +64,7 @@ func getConfig()(accounts []string)  {
 	return accounts
 }
 
-func crawl(url string)  {
+func crawl(url string, pages int)  {
 	fmt.Println("Crawling: " + url)
 	resp, err := http.Get(url)
 	defer resp.Body.Close()
@@ -71,6 +79,7 @@ func crawl(url string)  {
 	str := fmt.Sprintf("%s", html)
 	chunks := strings.Split(str,",")
 
+	nextPageId := ""
 	crawlSubImages := false
 
 	for _, element := range chunks {
@@ -100,6 +109,28 @@ func crawl(url string)  {
 			pic = strings.TrimRight(pic,`"`)
 			archive(pic,strings.Split(url,"/")[3])
 		}
+		/*
+		Tag for crawling older page
+		 */
+		if strings.HasPrefix(element," " + `"` + "id"){
+			nextPageId = strings.TrimLeft(element," " + `"` + "id" + `"` + ": ")
+			nextPageId = strings.TrimRight(nextPageId,`"`)
+		}
+	}
+	if(pages > 0){
+		if !strings.HasSuffix(url,"/"){
+			fmt.Println("I need to trim")
+			//need to trim max_id off
+			url = strings.TrimRight(url,strings.Split(url,"/")[len(strings.Split(url,"/")) -1])
+		}
+
+		url+= "?max_id="
+		url+= nextPageId
+
+		fmt.Println("I OPEN OLD PAGE: ", url)
+
+		pages--
+		crawl(url,pages)
 	}
 }
 
