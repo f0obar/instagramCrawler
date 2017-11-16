@@ -81,6 +81,8 @@ func crawl(url string, pages int)  {
 
 	nextPageId := ""
 	crawlSubImages := false
+	idCount := 0
+
 
 	for _, element := range chunks {
 		/*
@@ -115,9 +117,10 @@ func crawl(url string, pages int)  {
 		if strings.HasPrefix(element," " + `"` + "id"){
 			nextPageId = strings.TrimLeft(element," " + `"` + "id" + `"` + ": ")
 			nextPageId = strings.TrimRight(nextPageId,`"`)
+			idCount++
 		}
 	}
-	if(pages > 0){
+	if(pages != 0 && idCount == 13){
 		if !strings.HasSuffix(url,"/"){
 			fmt.Println("I need to trim")
 			//need to trim max_id off
