@@ -7,10 +7,12 @@ import (
 	"strings"
 	"log"
 	"os"
-	"io"
 	"strconv"
 	"time"
+	"sync"
+	"io"
 )
+var waitGroup sync.WaitGroup
 
 func main() {
 	fmt.Println("Crawler starting")
@@ -39,15 +41,18 @@ func main() {
 		for {
 			fmt.Println(">>CRAWLING<<")
 			for _, element := range config {
-				crawl(element,pagesToCrawlBack)
+				go crawl(element,pagesToCrawlBack)
 			}
+			waitGroup.Wait()
 			fmt.Println(">>CRAWLING FINISHED, next crawling will start in " + strconv.Itoa(interval) + " seconds<<")
 			<-t.C
 		}
 	} else {
 		for _, element := range config {
-			crawl(element,pagesToCrawlBack)
+			go crawl(element,pagesToCrawlBack)
 		}
+		time.Sleep(100)
+		waitGroup.Wait()
 		fmt.Println("Crawler finished")
 	}
 }
@@ -65,7 +70,18 @@ func getConfig()(accounts []string)  {
 }
 
 func crawl(url string, pages int)  {
-	fmt.Println("Crawling: " + url)
+	waitGroup.Add(1)
+	defer waitGroup.Done()
+
+	//create directory
+	if _, err := os.Stat(strings.Split(url,"/")[3]); os.IsNotExist(err) {
+		err = os.MkdirAll(strings.Split(url,"/")[3], 0777)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+
 	resp, err := http.Get(url)
 	defer resp.Body.Close()
 
@@ -101,7 +117,7 @@ func crawl(url string, pages int)  {
 			crawlSubImages = false
 			id := strings.TrimLeft(element," " + `"` + "code" + `"` + ": " + `"`)
 			id = strings.TrimRight(id,`"`)
-			crawlSub(id,strings.Split(url,"/")[3])
+			go crawlSub(id,strings.Split(url,"/")[3])
 		}
 		/*
 		Simple image, save directly.
@@ -109,7 +125,7 @@ func crawl(url string, pages int)  {
 		if strings.HasPrefix(element," " + `"` + "display_src") && crawlSubImages == false{
 			pic := strings.TrimLeft(element," " + `"` + "display_src: " + `"`)
 			pic = strings.TrimRight(pic,`"`)
-			archive(pic,strings.Split(url,"/")[3])
+			go archive(pic,strings.Split(url,"/")[3])
 		}
 		/*
 		Tag for crawling older page
@@ -122,15 +138,12 @@ func crawl(url string, pages int)  {
 	}
 	if(pages != 0 && idCount == 13){
 		if !strings.HasSuffix(url,"/"){
-			fmt.Println("I need to trim")
 			//need to trim max_id off
 			url = strings.TrimRight(url,strings.Split(url,"/")[len(strings.Split(url,"/")) -1])
 		}
 
 		url+= "?max_id="
 		url+= nextPageId
-
-		fmt.Println("I OPEN OLD PAGE: ", url)
 
 		pages--
 		crawl(url,pages)
@@ -139,7 +152,8 @@ func crawl(url string, pages int)  {
 
 
 func crawlSub(id string, username string){
-	fmt.Println("NEED TO CRAWL GALLERY", "https://www.instagram.com/p/" + id)
+	waitGroup.Add(1)
+	defer waitGroup.Done()
 	resp, err := http.Get("https://www.instagram.com/p/" + id)
 	defer resp.Body.Close()
 
@@ -157,45 +171,37 @@ func crawlSub(id string, username string){
 		if strings.HasPrefix(element," " + `"` + "display_url") {
 			pic := strings.TrimLeft(element," " + `"` + "display_url: " + `"`)
 			pic = strings.TrimRight(pic,`"`)
-			archive(pic,username)
+			go archive(pic,username)
 		}
 	}
 }
 
 
 func archive(pictureurl string, username string)  {
+	waitGroup.Add(1)
+	defer waitGroup.Done()
 	if !alreadySaved(username + "/" + strings.Split(pictureurl,"/")[len(strings.Split(pictureurl,"/")) - 1]) {
 		save(pictureurl, username)
 	}
 }
 
-func save(pictureurl string, username string)  {
-	fmt.Println("Saving new Image " + pictureurl)
+func save(pictureurl string, username string) {
 	response, e := http.Get(pictureurl)
 	if e != nil {
 		log.Fatal(e)
 	}
 	defer response.Body.Close()
 
-	//create directory
-	if _, err := os.Stat(username); os.IsNotExist(err) {
-		err = os.MkdirAll(username, 0777)
-		if err != nil {
-			panic(err)
-		}
-	}
-
-	//open a file for writing
-	file, err := os.Create(username + "/" + strings.Split(pictureurl,"/")[len(strings.Split(pictureurl,"/")) - 1])
+	file, err := os.Create(username + "/" + strings.Split(pictureurl, "/")[len(strings.Split(pictureurl, "/"))-1])
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer file.Close()
 
 	_, err = io.Copy(file, response.Body)
 	if err != nil {
 		log.Fatal(err)
 	}
-	file.Close()
 }
 
 func alreadySaved(fullpath string)(exists bool)  {
