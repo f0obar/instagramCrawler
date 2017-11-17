@@ -11,8 +11,13 @@ import (
 	"time"
 	"sync"
 	"io"
+	"regexp"
 )
 var waitGroup sync.WaitGroup
+var mutex sync.Mutex
+
+var allAccounts []string
+var madness = false
 
 func main() {
 	fmt.Println("Crawler starting")
@@ -30,11 +35,14 @@ func main() {
 		if(err != nil){
 			panic(err)
 		}
+		if pagesToCrawlBack == -2 {
+			madness = true
+		}
 		fmt.Println("Crawlback mode: " + config[0] + " Pages")
 		config = append(config[:0], config[1:]...)
 	}
 	fmt.Println("Found " + strconv.Itoa(len(config)) + " Accounts to crawl")
-
+	allAccounts = config
 
 	if interval > 0 {
 		t := time.NewTicker(time.Duration(interval)*time.Second)
@@ -131,10 +139,31 @@ func crawl(url string, pages int)  {
 		Tag for crawling older page
 		 */
 		if strings.HasPrefix(element," " + `"` + "id"){
-			nextPageId = strings.TrimLeft(element," " + `"` + "id" + `"` + ": ")
+			nextPageId = strings.TrimLeft(element," " + `"` + "id" + `"` + ": " + `"`)
 			nextPageId = strings.TrimRight(nextPageId,`"`)
 			idCount++
 		}
+		/**
+		madness mode
+		 */
+		 if madness {
+			 if strings.HasPrefix(element," " + `"` + "caption") && strings.Contains(element,"@"){
+				 description := strings.TrimLeft(element," " + `"` + "caption" + `"` + ": ")
+				 description = strings.TrimRight(description,`"`)
+				 possibleAccs := strings.Split(description, " ")
+
+				 for _, acc := range possibleAccs {
+				 	if strings.HasPrefix(acc,"@"){
+						reg, err := regexp.Compile("[^a-zA-Z0-9_]+")
+						if err != nil {
+							log.Fatal(err)
+						}
+						processedString := reg.ReplaceAllString(acc, "")
+						go addNewlyCralwedAccount(strings.TrimLeft(processedString,"@"))
+					}
+				 }
+			 }
+		 }
 	}
 	if(pages != 0 && idCount == 13){
 		if !strings.HasSuffix(url,"/"){
@@ -209,4 +238,31 @@ func alreadySaved(fullpath string)(exists bool)  {
 		return false
 	}
 	return true
+}
+
+func addNewlyCralwedAccount(acc string)  {
+	waitGroup.Add(1)
+	mutex.Lock()
+	if !contains(allAccounts,acc){
+		fmt.Println("New Account Found:",acc)
+		//Write it to file
+		f, _ := os.OpenFile("config.txt", os.O_APPEND|os.O_WRONLY, 0777)
+		f.WriteString(",https://www.instagram.com/"+acc+"/")
+		f.Close()
+		//add it to array
+		allAccounts = append(allAccounts,acc)
+		//start new routine
+		//go crawl("",-2)
+	}
+	mutex.Unlock()
+	waitGroup.Done()
+}
+
+func contains(s []string, e string) bool {
+	for _, a := range s {
+		if a == e {
+			return true
+		}
+	}
+	return false
 }
