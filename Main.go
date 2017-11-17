@@ -159,7 +159,9 @@ func crawl(url string, pages int)  {
 							log.Fatal(err)
 						}
 						processedString := reg.ReplaceAllString(acc, "")
-						go addNewlyCralwedAccount(strings.TrimLeft(processedString,"@"))
+						if len(processedString) > 0 {
+							go addNewlyCralwedAccount(strings.TrimLeft(processedString, "@"))
+						}
 					}
 				 }
 			 }
