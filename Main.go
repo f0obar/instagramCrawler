@@ -93,7 +93,7 @@ func main() {
 }
 
 func statusNotification()  {
-	for len(imagesToSave) > 0 || len(accountsToCrawl) > 0{
+	for /*len(imagesToSave) > 0 || len(accountsToCrawl) > 0*/{
 		fmt.Println("###################","Profiles in Queue:",len(accountsToCrawl),"Images in Queue",len(imagesToSave),"###################")
 		time.Sleep(2*time.Second)
 	}
