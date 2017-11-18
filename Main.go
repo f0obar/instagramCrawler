@@ -17,10 +17,13 @@ import (
 )
 
 var waitGroup = sync.WaitGroup{}
-var workers = 5
+var workers = 2
+var imageConnections = 10
 var pages = -1
 var interval = -1
 var accountsToCrawl chan string
+var imagesToSave chan MyImage
+
 
 func main() {
 	fmt.Println("Crawler starting")
@@ -57,10 +60,21 @@ func main() {
 				pages = num
 			}
 		}
+		if strings.HasPrefix(element, "i") {
+			reg, err := regexp.Compile("[^0-9]+")
+			if err != nil {
+				log.Fatal(err)
+			}
+			processedString := reg.ReplaceAllString(element, "")
+			if num, err := strconv.Atoi(processedString); err == nil {
+				imageConnections = num
+			}
+		}
 	}
 
-	fmt.Println("Workerpool Size:", workers)
-	fmt.Println("Pages to Crawl per profile:", pages)
+	fmt.Println("Workerpool size:", workers)
+	fmt.Println("Maximum concurrent image requests",imageConnections)
+	fmt.Println("Pages to crawl per profile:", pages)
 	fmt.Println("Refreshing interval:", interval, "seconds")
 
 	if interval > 0 {
@@ -78,14 +92,26 @@ func main() {
 	}
 }
 
+func statusNotification()  {
+	for len(imagesToSave) > 0 || len(accountsToCrawl) > 0{
+		fmt.Println("###################","Profiles in Queue:",len(accountsToCrawl),"Images in Queue",len(imagesToSave),"###################")
+		time.Sleep(2*time.Second)
+	}
+}
+
 func startCrawling() {
-	accountsToCrawl = make(chan string, 1000)
+	accountsToCrawl = make(chan string, 100)
+	imagesToSave = make(chan MyImage,10000)
 
 	readAccountsFile()
 	for w := 1; w <= workers; w++ {
-		go workerRun(w)
+		go workerRun()
+	}
+	for i := 1; i <= imageConnections; i++ {
+		go imageSaverRun()
 	}
 	time.Sleep(100)
+	go statusNotification()
 	waitGroup.Wait()
 }
 
@@ -96,19 +122,26 @@ func readAccountsFile()  {
 		panic(err)
 	}
 	for _, element := range strings.Split(string(b),",") {
-		addAccount(element)
+		addAccountToQueue(element)
 	}
 }
 
-func workerRun(i int) {
+func workerRun() {
 	for account := range accountsToCrawl {
-		fmt.Println("Worker",i,"crawling: ",account)
+		fmt.Println("Worker crawling: ",account)
 		crawl(account)
 		waitGroup.Done()
 	}
 }
 
-func addAccount(acc string)  {
+func imageSaverRun()  {
+	for image := range imagesToSave {
+		archive(image.Url,image.Username,image.Timestamp)
+		waitGroup.Done()
+	}
+}
+
+func addAccountToQueue(acc string)  {
 	waitGroup.Add(1)
 	accountsToCrawl <- acc
 }
@@ -192,7 +225,7 @@ func openPage(url string, accountname string)(nextPageID string){
 		if !element.IsVideo{
 			if element.Typename == "GraphImage" {
 				waitGroup.Add(1)
-				go archive(element.DisplaySrc,accountname,element.Date)
+				imagesToSave <- MyImage{element.DisplaySrc,accountname,element.Date}
 			}
 			if element.Typename == "GraphSidecar" {
 				waitGroup.Add(1)
@@ -251,10 +284,16 @@ func openGallery(url string, accountname string,timestamp int)  {
 	for _, element := range page.EntryData.PostPage[0].Graphql.ShortcodeMedia.EdgeSidecarToChildren.Edges {
 		if element.Node.Typename == "GraphImage" {
 			waitGroup.Add(1)
-			go archive(element.Node.DisplaySrc,accountname,timestamp)
+			imagesToSave <- MyImage{element.Node.DisplaySrc,accountname,timestamp}
 		}
 	}
 	waitGroup.Done()
+}
+
+type MyImage struct {
+	Url string
+	Username string
+	Timestamp int
 }
 
 func archive(pictureurl string, username string,timestamp int)  {
@@ -263,7 +302,6 @@ func archive(pictureurl string, username string,timestamp int)  {
 	if _, err := os.Stat(fullpath); os.IsNotExist(err) {
 		save(pictureurl, fullpath)
 	}
-	waitGroup.Done()
 }
 
 func save(pictureurl string, fullpath string) {
