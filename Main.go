@@ -40,7 +40,7 @@ func main() {
 				workers = num
 			}
 		}
-		if strings.HasPrefix(element, "i") {
+		if strings.HasPrefix(element, "r") {
 			reg, err := regexp.Compile("[^0-9]+")
 			if err != nil {
 				log.Fatal(err)
