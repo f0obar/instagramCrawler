@@ -16,7 +16,7 @@ import (
 	"encoding/json"
 )
 
-var waitGorup = sync.WaitGroup{}
+var waitGroup = sync.WaitGroup{}
 var workers = 5
 var pages = -1
 var interval = -1
@@ -86,7 +86,7 @@ func startCrawling() {
 		go workerRun(w)
 	}
 	time.Sleep(100)
-	waitGorup.Wait()
+	waitGroup.Wait()
 }
 
 func readAccountsFile()  {
@@ -104,12 +104,12 @@ func workerRun(i int) {
 	for account := range accountsToCrawl {
 		fmt.Println("Worker",i,"crawling: ",account)
 		crawl(account)
-		waitGorup.Done()
+		waitGroup.Done()
 	}
 }
 
 func addAccount(acc string)  {
-	waitGorup.Add(1)
+	waitGroup.Add(1)
 	accountsToCrawl <- acc
 }
 
@@ -191,11 +191,11 @@ func openPage(url string, accountname string)(nextPageID string){
 	for _, element := range page.EntryData.ProfilePage[0].User.Media.Nodes {
 		if !element.IsVideo{
 			if element.Typename == "GraphImage" {
-				waitGorup.Add(1)
+				waitGroup.Add(1)
 				go archive(element.DisplaySrc,accountname,element.Date)
 			}
 			if element.Typename == "GraphSidecar" {
-				waitGorup.Add(1)
+				waitGroup.Add(1)
 			 	go openGallery("https://www.instagram.com/p/" + element.Code,accountname,element.Date)
 			}
 		}
@@ -250,11 +250,11 @@ func openGallery(url string, accountname string,timestamp int)  {
 
 	for _, element := range page.EntryData.PostPage[0].Graphql.ShortcodeMedia.EdgeSidecarToChildren.Edges {
 		if element.Node.Typename == "GraphImage" {
-			waitGorup.Add(1)
+			waitGroup.Add(1)
 			go archive(element.Node.DisplaySrc,accountname,timestamp)
 		}
 	}
-	waitGorup.Done()
+	waitGroup.Done()
 }
 
 func archive(pictureurl string, username string,timestamp int)  {
@@ -263,7 +263,7 @@ func archive(pictureurl string, username string,timestamp int)  {
 	if _, err := os.Stat(fullpath); os.IsNotExist(err) {
 		save(pictureurl, fullpath)
 	}
-	waitGorup.Done()
+	waitGroup.Done()
 }
 
 func save(pictureurl string, fullpath string) {
