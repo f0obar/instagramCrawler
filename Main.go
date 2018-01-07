@@ -16,13 +16,19 @@ import (
 	"encoding/json"
 )
 
+const errorDelay  = 30000
 var waitGroup = sync.WaitGroup{}
-var workers = 2
-var imageConnections = 10
 var pages = -1
 var interval = -1
-var accountsToCrawl chan string
-var imagesToSave chan MyImage
+
+// Maximum simultanious http connections open at any given time (workerpool size)
+var maxConnections = 1
+
+// Image urls with additional data required for saving get stored in here.
+var imagesToSave = make(chan Image,10000)
+
+//links to galleries or pages get stored in here.
+var pagesToVisit = make(chan interface{},1000)
 
 
 func main() {
@@ -30,14 +36,14 @@ func main() {
 	params := append(os.Args[:0], os.Args[1:]...)
 
 	for _, element := range params {
-		if strings.HasPrefix(element, "w") {
+		if strings.HasPrefix(element, "c") {
 			reg, err := regexp.Compile("[^0-9]+")
 			if err != nil {
 				log.Fatal(err)
 			}
 			processedString := reg.ReplaceAllString(element, "")
 			if num, err := strconv.Atoi(processedString); err == nil {
-				workers = num
+				maxConnections = num
 			}
 		}
 		if strings.HasPrefix(element, "r") {
@@ -60,20 +66,10 @@ func main() {
 				pages = num
 			}
 		}
-		if strings.HasPrefix(element, "i") {
-			reg, err := regexp.Compile("[^0-9]+")
-			if err != nil {
-				log.Fatal(err)
-			}
-			processedString := reg.ReplaceAllString(element, "")
-			if num, err := strconv.Atoi(processedString); err == nil {
-				imageConnections = num
-			}
-		}
 	}
 
-	fmt.Println("Workerpool size:", workers)
-	fmt.Println("Maximum concurrent image requests",imageConnections)
+
+	fmt.Println("Maximum concurrent connections",maxConnections)
 	fmt.Println("Pages to crawl per profile:", pages)
 	fmt.Println("Refreshing interval:", interval, "seconds")
 
@@ -92,26 +88,14 @@ func main() {
 	}
 }
 
-func statusNotification()  {
-	for /*len(imagesToSave) > 0 || len(accountsToCrawl) > 0*/{
-		fmt.Println("###################","Profiles in Queue:",len(accountsToCrawl),"Images in Queue",len(imagesToSave),"###################")
-		time.Sleep(2*time.Second)
-	}
-}
 
 func startCrawling() {
-	accountsToCrawl = make(chan string, 100)
-	imagesToSave = make(chan MyImage,10000)
-
 	readAccountsFile()
-	for w := 1; w <= workers; w++ {
-		go workerRun()
+	for i := 1; i <= maxConnections; i++ {
+		go workerRoutine()
 	}
-	for i := 1; i <= imageConnections; i++ {
-		go imageSaverRun()
-	}
+	//go status()
 	time.Sleep(100)
-	go statusNotification()
 	waitGroup.Wait()
 }
 
@@ -122,59 +106,171 @@ func readAccountsFile()  {
 		panic(err)
 	}
 	for _, element := range strings.Split(string(b),",") {
-		addAccountToQueue(element)
-	}
-}
-
-func workerRun() {
-	for account := range accountsToCrawl {
-		fmt.Println("Worker crawling: ",account)
-		crawl(account)
-		waitGroup.Done()
-	}
-}
-
-func imageSaverRun()  {
-	for image := range imagesToSave {
-		archive(image.Url,image.Username,image.Timestamp)
-		waitGroup.Done()
-	}
-}
-
-func addAccountToQueue(acc string)  {
-	waitGroup.Add(1)
-	accountsToCrawl <- acc
-}
-
-func crawl(account string)  {
-	fmt.Println("+++crawling:",account,"+++")
-
-	//Checking / Creating Foler for the account
-	if _, err := os.Stat(account); os.IsNotExist(err) {
-		err = os.MkdirAll(account, 0777)
-		if err != nil {
-			panic(err)
+		//Checking / Creating folder for the account
+		if _, err := os.Stat(element); os.IsNotExist(err) {
+			err = os.MkdirAll(element, 0777)
+			if err != nil {
+				panic(err)
+			}
 		}
+		//Adding base page to the que
+		pagesToVisit <- Page{"https://www.instagram.com/" + element + "/",element,pages}
+		waitGroup.Add(1)
 	}
-	baseUrl:= "https://www.instagram.com/" + account + "/"
+}
 
-	if pages == -1 {
-		//crawl full page
-		nextID := openPage(baseUrl, account)
-		for nextID != "" {
-			nextID = openPage(baseUrl + "?max_id=" + nextID, account)
+func workerRoutine(){
+	for {
+		select {
+		case page := <-pagesToVisit:
+			switch t := page.(type) {
+			case Page:
+				handlePage(t)
+			case Gallery:
+				handleGallery(t)
+			}
+			continue
+		default:
 		}
-	} else {
-		if pages > 0 {
-			pagesLeft := pages - 1
-			nextID := openPage(baseUrl, account)
-			for nextID != "" && pagesLeft > 0{
-				nextID = openPage(baseUrl + "?max_id=" + nextID, account)
-				pagesLeft--
+		select {
+		case page := <-pagesToVisit:
+			switch t := page.(type) {
+			case Page:
+				handlePage(t)
+			case Gallery:
+				handleGallery(t)
+			}
+			continue
+		case i := <-imagesToSave:
+			handleImage(i)
+			continue
+		}
+		break
+	}
+}
+
+func handlePage(page Page){
+	fmt.Println("handlePage",page.Url)
+	resp, err := soup.Get(page.Url)
+	if err != nil {
+		fmt.Println("Error in Soup", err)
+		time.Sleep(errorDelay)
+		handlePage(page)
+		return
+		//panic(err)
+	}
+	doc := soup.HTMLParse(resp)
+	script := doc.FindAll("script")[2].Text()
+	script = script[21:len(script)-1]
+
+	var data map[string]interface{}
+	e := json.Unmarshal([]byte(script), &data)
+	if e != nil {
+		panic(e)
+	}
+
+	mainPage := MainPage{}
+	json.Unmarshal([]byte(script), &mainPage)
+
+
+	for _, element := range mainPage.EntryData.ProfilePage[0].User.Media.Nodes {
+		if !element.IsVideo{
+			if element.Typename == "GraphImage" {
+				waitGroup.Add(1)
+				imagesToSave <- Image{element.DisplaySrc,page.Username,element.Date}
+			}
+			if element.Typename == "GraphSidecar" {
+				waitGroup.Add(1)
+				pagesToVisit <- Gallery{"https://www.instagram.com/p/" + element.Code,page.Username,element.Date}
 			}
 		}
 	}
-	fmt.Println("---crawling finished:",account,"---")
+
+	if page.Remaining != 0 && mainPage.EntryData.ProfilePage[0].User.Media.PageInfo.HasNextPage {
+		waitGroup.Add(1)
+		pagesToVisit <- Page{"https://www.instagram.com/" + page.Username + "/?max_id=" + mainPage.EntryData.ProfilePage[0].User.Media.Nodes[11].Id,page.Username,page.Remaining - 1}
+	}
+	waitGroup.Done()
+}
+
+func handleGallery(gallery Gallery){
+	fmt.Println("handling gallery")
+	resp, err := soup.Get(gallery.Url)
+	if err != nil {
+		fmt.Println("Error in Soup", err)
+		time.Sleep(errorDelay)
+		handleGallery(gallery)
+		return
+		//panic(err)
+	}
+	doc := soup.HTMLParse(resp)
+	script := doc.FindAll("script")[2].Text()
+	script = script[21:len(script)-1]
+
+	var data map[string]interface{}
+	e := json.Unmarshal([]byte(script), &data)
+	if e != nil {
+		panic(e)
+	}
+
+	page := GalleryPage{}
+	json.Unmarshal([]byte(script), &page)
+
+	for _, element := range page.EntryData.PostPage[0].Graphql.ShortcodeMedia.EdgeSidecarToChildren.Edges {
+		if element.Node.Typename == "GraphImage" {
+			waitGroup.Add(1)
+			imagesToSave <- Image{element.Node.DisplaySrc,gallery.Username,gallery.Timestamp}
+		}
+	}
+	waitGroup.Done()
+}
+
+func handleImage(image Image){
+	fmt.Println("handling image")
+	fullpath := image.Username + "/" + strconv.Itoa(image.Timestamp) + "_" +strings.Split(image.Url,"/")[len(strings.Split(image.Url,"/")) - 1]
+
+	if _, err := os.Stat(fullpath); os.IsNotExist(err) {
+		response, e := http.Get(image.Url)
+		if e != nil {
+			log.Fatal(e)
+		}
+		defer response.Body.Close()
+		if response.Status != "200 OK" {
+			fmt.Println("Error",response.Status)
+			time.Sleep(errorDelay)
+			handleImage(image)
+			return
+		}
+
+		file, err := os.Create(fullpath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer file.Close()
+		_, err = io.Copy(file, response.Body)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	waitGroup.Done()
+}
+
+type Page struct {
+	Url string
+	Username string
+	Remaining int
+}
+
+type Gallery struct {
+	Url string
+	Username string
+	Timestamp int
+}
+
+type Image struct {
+	Url string
+	Username string
+	Timestamp int
 }
 
 type MainPage struct {
@@ -201,46 +297,6 @@ type MainPage struct {
 	} `json:"entry_data"`
 }
 
-
-func openPage(url string, accountname string)(nextPageID string){
-	resp, err := soup.Get(url)
-	if err != nil {
-		panic(err)
-	}
-	doc := soup.HTMLParse(resp)
-	script := doc.FindAll("script")[2].Text()
-	script = script[21:len(script)-1]
-
-	var data map[string]interface{}
-	e := json.Unmarshal([]byte(script), &data)
-	if e != nil {
-		panic(e)
-	}
-
-	page := MainPage{}
-	json.Unmarshal([]byte(script), &page)
-
-
-	for _, element := range page.EntryData.ProfilePage[0].User.Media.Nodes {
-		if !element.IsVideo{
-			if element.Typename == "GraphImage" {
-				waitGroup.Add(1)
-				imagesToSave <- MyImage{element.DisplaySrc,accountname,element.Date}
-			}
-			if element.Typename == "GraphSidecar" {
-				waitGroup.Add(1)
-			 	go openGallery("https://www.instagram.com/p/" + element.Code,accountname,element.Date)
-			}
-		}
-	}
-
-	if page.EntryData.ProfilePage[0].User.Media.PageInfo.HasNextPage {
-		return page.EntryData.ProfilePage[0].User.Media.Nodes[11].Id
-	}
-	return ""
-}
-
-
 type GalleryPage struct {
 	EntryData struct {
 		PostPage []struct {
@@ -261,64 +317,4 @@ type GalleryPage struct {
 			} `json:"graphql"`
 		} `json:"PostPage"`
 	} `json:"entry_data"`
-}
-
-func openGallery(url string, accountname string,timestamp int)  {
-	resp, err := soup.Get(url)
-	if err != nil {
-		panic(err)
-	}
-	doc := soup.HTMLParse(resp)
-	script := doc.FindAll("script")[2].Text()
-	script = script[21:len(script)-1]
-
-	var data map[string]interface{}
-	e := json.Unmarshal([]byte(script), &data)
-	if e != nil {
-		panic(e)
-	}
-
-	page := GalleryPage{}
-	json.Unmarshal([]byte(script), &page)
-
-	for _, element := range page.EntryData.PostPage[0].Graphql.ShortcodeMedia.EdgeSidecarToChildren.Edges {
-		if element.Node.Typename == "GraphImage" {
-			waitGroup.Add(1)
-			imagesToSave <- MyImage{element.Node.DisplaySrc,accountname,timestamp}
-		}
-	}
-	waitGroup.Done()
-}
-
-type MyImage struct {
-	Url string
-	Username string
-	Timestamp int
-}
-
-func archive(pictureurl string, username string,timestamp int)  {
-	fullpath := username + "/" + strconv.Itoa(timestamp) + "_" +strings.Split(pictureurl,"/")[len(strings.Split(pictureurl,"/")) - 1]
-
-	if _, err := os.Stat(fullpath); os.IsNotExist(err) {
-		save(pictureurl, fullpath)
-	}
-}
-
-func save(pictureurl string, fullpath string) {
-	response, e := http.Get(pictureurl)
-	if e != nil {
-		log.Fatal(e)
-	}
-	defer response.Body.Close()
-
-	file, err := os.Create(fullpath)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer file.Close()
-
-	_, err = io.Copy(file, response.Body)
-	if err != nil {
-		log.Fatal(err)
-	}
 }
