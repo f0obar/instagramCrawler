@@ -22,13 +22,17 @@ var pages = -1
 var interval = -1
 
 // Maximum simultanious http connections open at any given time (workerpool size)
-var maxConnections = 1
+var maxConnections = 3
 
 // Image urls with additional data required for saving get stored in here.
-var imagesToSave = make(chan Image,10000)
+var imageChan = make(chan Image,10000)
 
 //links to galleries or pages get stored in here.
-var pagesToVisit = make(chan interface{},1000)
+var pageChan = make(chan Page,1000)
+
+//links to galleries or pages get stored in here.
+var galleryChan = make(chan Gallery,1000)
+
 
 
 func main() {
@@ -114,7 +118,7 @@ func readAccountsFile()  {
 			}
 		}
 		//Adding base page to the que
-		pagesToVisit <- Page{"https://www.instagram.com/" + element + "/",element,pages}
+		pageChan <- Page{"https://www.instagram.com/" + element + "/",element,pages}
 		waitGroup.Add(1)
 	}
 }
@@ -122,26 +126,25 @@ func readAccountsFile()  {
 func workerRoutine(){
 	for {
 		select {
-		case page := <-pagesToVisit:
-			switch t := page.(type) {
-			case Page:
-				handlePage(t)
-			case Gallery:
-				handleGallery(t)
-			}
+		case page := <-pageChan:
+			handlePage(page)
 			continue
 		default:
 		}
 		select {
-		case page := <-pagesToVisit:
-			switch t := page.(type) {
-			case Page:
-				handlePage(t)
-			case Gallery:
-				handleGallery(t)
-			}
+		case gallery := <-galleryChan:
+			handleGallery(gallery)
 			continue
-		case i := <-imagesToSave:
+		default:
+		}
+		select {
+		case page := <-pageChan:
+			handlePage(page)
+			continue
+		case gallery := <-galleryChan:
+			handleGallery(gallery)
+			continue
+		case i := <-imageChan:
 			handleImage(i)
 			continue
 		}
@@ -177,18 +180,18 @@ func handlePage(page Page){
 		if !element.IsVideo{
 			if element.Typename == "GraphImage" {
 				waitGroup.Add(1)
-				imagesToSave <- Image{element.DisplaySrc,page.Username,element.Date}
+				imageChan <- Image{element.DisplaySrc,page.Username,element.Date}
 			}
 			if element.Typename == "GraphSidecar" {
 				waitGroup.Add(1)
-				pagesToVisit <- Gallery{"https://www.instagram.com/p/" + element.Code,page.Username,element.Date}
+				galleryChan <- Gallery{"https://www.instagram.com/p/" + element.Code,page.Username,element.Date}
 			}
 		}
 	}
 
 	if page.Remaining != 0 && mainPage.EntryData.ProfilePage[0].User.Media.PageInfo.HasNextPage {
 		waitGroup.Add(1)
-		pagesToVisit <- Page{"https://www.instagram.com/" + page.Username + "/?max_id=" + mainPage.EntryData.ProfilePage[0].User.Media.Nodes[11].Id,page.Username,page.Remaining - 1}
+		pageChan <- Page{"https://www.instagram.com/" + page.Username + "/?max_id=" + mainPage.EntryData.ProfilePage[0].User.Media.Nodes[11].Id,page.Username,page.Remaining - 1}
 	}
 	waitGroup.Done()
 }
@@ -219,7 +222,7 @@ func handleGallery(gallery Gallery){
 	for _, element := range page.EntryData.PostPage[0].Graphql.ShortcodeMedia.EdgeSidecarToChildren.Edges {
 		if element.Node.Typename == "GraphImage" {
 			waitGroup.Add(1)
-			imagesToSave <- Image{element.Node.DisplaySrc,gallery.Username,gallery.Timestamp}
+			imageChan <- Image{element.Node.DisplaySrc,gallery.Username,gallery.Timestamp}
 		}
 	}
 	waitGroup.Done()
