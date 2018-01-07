@@ -24,13 +24,8 @@ var interval = -1
 // Maximum simultanious http connections open at any given time (workerpool size)
 var maxConnections = 3
 
-// Image urls with additional data required for saving get stored in here.
 var imageChan = make(chan Image,10000)
-
-//links to galleries or pages get stored in here.
 var pageChan = make(chan Page,1000)
-
-//links to galleries or pages get stored in here.
 var galleryChan = make(chan Gallery,1000)
 
 
