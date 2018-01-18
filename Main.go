@@ -10,10 +10,11 @@ import (
 	"strconv"
 	"time"
 	"io"
-	"regexp"
 	"sync"
 	"github.com/anaskhan96/soup"
 	"encoding/json"
+	"github.com/gosuri/uiprogress"
+	"regexp"
 )
 
 const errorDelay  = 30000
@@ -21,12 +22,18 @@ var waitGroup = sync.WaitGroup{}
 var pages = -1
 var interval = -1
 
+//variables just for gui information
+var doneCount = 0
+var savedImages = 0
+
 // Maximum simultanious http connections open at any given time (workerpool size)
 var maxConnections = 3
 
 var imageChan = make(chan Image,10000)
 var pageChan = make(chan Page,1000)
 var galleryChan = make(chan Gallery,1000)
+
+var bar *uiprogress.Bar// Add a new bar
 
 
 
@@ -89,6 +96,11 @@ func main() {
 
 
 func startCrawling() {
+	uiprogress.Start()            // start rendering
+	bar = uiprogress.AddBar(100) // Add a new bar
+	bar.AppendCompleted()
+
+	doneCount = 0
 	readAccountsFile()
 	for i := 1; i <= maxConnections; i++ {
 		go workerRoutine()
@@ -96,6 +108,7 @@ func startCrawling() {
 	//go status()
 	time.Sleep(100)
 	waitGroup.Wait()
+	fmt.Println("Saved " + strconv.Itoa(savedImages) + " new Images!")
 }
 
 func readAccountsFile()  {
@@ -148,7 +161,6 @@ func workerRoutine(){
 }
 
 func handlePage(page Page){
-	fmt.Println("handlePage",page.Url)
 	resp, err := soup.Get(page.Url)
 	if err != nil {
 		fmt.Println("Error in Soup", err)
@@ -188,11 +200,11 @@ func handlePage(page Page){
 		waitGroup.Add(1)
 		pageChan <- Page{"https://www.instagram.com/" + page.Username + "/?max_id=" + mainPage.EntryData.ProfilePage[0].User.Media.Nodes[11].Id,page.Username,page.Remaining - 1}
 	}
+	updateProgressBar()
 	waitGroup.Done()
 }
 
 func handleGallery(gallery Gallery){
-	fmt.Println("handling gallery")
 	resp, err := soup.Get(gallery.Url)
 	if err != nil {
 		fmt.Println("Error in Soup", err)
@@ -220,11 +232,11 @@ func handleGallery(gallery Gallery){
 			imageChan <- Image{element.Node.DisplaySrc,gallery.Username,gallery.Timestamp}
 		}
 	}
+	updateProgressBar()
 	waitGroup.Done()
 }
 
 func handleImage(image Image){
-	fmt.Println("handling image")
 	fullpath := image.Username + "/" + strconv.Itoa(image.Timestamp) + "_" +strings.Split(image.Url,"/")[len(strings.Split(image.Url,"/")) - 1]
 
 	if _, err := os.Stat(fullpath); os.IsNotExist(err) {
@@ -249,8 +261,20 @@ func handleImage(image Image){
 		if err != nil {
 			log.Fatal(err)
 		}
+		savedImages ++
 	}
+	updateProgressBar()
 	waitGroup.Done()
+}
+
+func updateProgressBar() {
+	doneCount ++
+	if doneCount == 0 {
+		bar.Set(0)
+	} else {
+		f := float64(doneCount)/float64(len(imageChan) + len(galleryChan) + len(pageChan) + doneCount)
+		bar.Set(int(f * 100))
+	}
 }
 
 type Page struct {
