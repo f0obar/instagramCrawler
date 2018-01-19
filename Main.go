@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"github.com/gosuri/uiprogress"
 	"regexp"
+	"errors"
 )
 
 const errorDelay = 5
@@ -160,21 +161,19 @@ func workerRoutine(){
 }
 
 func handlePage(page Page){
-	resp, err := soup.Get(page.Url)
+	resp, err, retry := get(page.Url)
 	if err != nil {
-		fmt.Println("Request Error:", err,"Retrying in",errorDelay,"seconds")
-		time.Sleep(errorDelay * time.Second)
-		handlePage(page)
-		return
+		if retry {
+			handlePage(page)
+			return
+		} else {
+			updateProgressBar()
+			waitGroup.Done()
+			return
+		}
 	}
 	doc := soup.HTMLParse(resp)
 
-	if(strings.Contains(doc.Find("title").Text(),"Page Not Found")) {
-		fmt.Println("Could not find user:",page.Username)
-		updateProgressBar()
-		waitGroup.Done()
-		return
-	}
 	script := doc.FindAll("script")[2].Text()
 	script = script[21:len(script)-1]
 
@@ -210,14 +209,19 @@ func handlePage(page Page){
 }
 
 func handleGallery(gallery Gallery){
-	resp, err := soup.Get(gallery.Url)
+	resp, err, retry := get(gallery.Url)
 	if err != nil {
-		fmt.Println("Request Error:", err,"Retrying in",errorDelay,"seconds")
-		time.Sleep(errorDelay * time.Second)
-		handleGallery(gallery)
-		return
+		if retry {
+			handleGallery(gallery)
+			return
+		} else {
+			updateProgressBar()
+			waitGroup.Done()
+			return
+		}
 	}
 	doc := soup.HTMLParse(resp)
+
 	script := doc.FindAll("script")[2].Text()
 	script = script[21:len(script)-1]
 
@@ -244,21 +248,29 @@ func handleImage(image Image){
 	fullpath := image.Username + "/" + strconv.Itoa(image.Timestamp) + "_" +strings.Split(image.Url,"/")[len(strings.Split(image.Url,"/")) - 1]
 
 	if _, err := os.Stat(fullpath); os.IsNotExist(err) {
-		response, e := http.Get(image.Url)
+		resp, e := http.Get(image.Url)
 		if e != nil {
-			fmt.Println("Request Error:", err,"Retrying in",errorDelay,"seconds")
 			time.Sleep(errorDelay * time.Second)
 			handleImage(image)
 			return
 		}
-		defer response.Body.Close()
+		defer resp.Body.Close()
+
+		if resp.StatusCode == 429{
+			time.Sleep(errorDelay * time.Second)
+			handleImage(image)
+			return
+		}
+		if(resp.StatusCode == 404) {
+			return
+		}
 
 		file, err := os.Create(fullpath)
 		if err != nil {
 			log.Fatal(err)
 		}
 		defer file.Close()
-		_, err = io.Copy(file, response.Body)
+		_, err = io.Copy(file, resp.Body)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -276,6 +288,38 @@ func updateProgressBar() {
 		f := float64(doneCount)/float64(len(imageChan) + len(galleryChan) + len(pageChan) + doneCount)
 		bar.Set(int(f * 100))
 	}
+}
+
+
+func get(url string)(string, error, bool) {
+	resp, e := http.Get(url)
+	if e != nil {
+		time.Sleep(errorDelay * time.Second)
+		return "",errors.New("Connection Issues"),true
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 429{
+		time.Sleep(errorDelay * time.Second)
+		return "",errors.New("Throtteling"),true
+	}
+	if(resp.StatusCode == 404) {
+		return "",errors.New("Not found"),false
+	}
+
+	bytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", errors.New("Unable to read the response body"),false
+	}
+	return string(bytes), nil,false
+}
+
+func checkAndHandleThrottle(s string) {
+
+}
+
+func checkForError(s string)(bool) {
+	return false
 }
 
 type Page struct {
