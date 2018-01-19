@@ -9,7 +9,6 @@ import (
 	"os"
 	"strconv"
 	"time"
-	"io"
 	"sync"
 	"github.com/anaskhan96/soup"
 	"encoding/json"
@@ -18,7 +17,7 @@ import (
 	"errors"
 )
 
-const errorDelay = 5
+const errorDelay = 30
 var waitGroup = sync.WaitGroup{}
 var pages = -1
 var interval = -1
@@ -27,7 +26,7 @@ var interval = -1
 var doneCount = 0
 var savedImages = 0
 
-// Maximum simultanious http connections open at any given time (workerpool size)
+// Maximum simultaneously http connections open at any given time (worker pool size)
 var maxConnections = 50
 
 var imageChan = make(chan Image,10000)
@@ -161,18 +160,13 @@ func workerRoutine(){
 }
 
 func handlePage(page Page){
-	resp, err, retry := get(page.Url)
+	resp, err := get(page.Url)
 	if err != nil {
-		if retry {
-			handlePage(page)
-			return
-		} else {
-			updateProgressBar()
-			waitGroup.Done()
-			return
-		}
+		updateProgressBar()
+		waitGroup.Done()
+		return
 	}
-	doc := soup.HTMLParse(resp)
+	doc := soup.HTMLParse(string(resp))
 
 	script := doc.FindAll("script")[2].Text()
 	script = script[21:len(script)-1]
@@ -185,7 +179,6 @@ func handlePage(page Page){
 
 	mainPage := MainPage{}
 	json.Unmarshal([]byte(script), &mainPage)
-
 
 	for _, element := range mainPage.EntryData.ProfilePage[0].User.Media.Nodes {
 		if !element.IsVideo{
@@ -209,18 +202,13 @@ func handlePage(page Page){
 }
 
 func handleGallery(gallery Gallery){
-	resp, err, retry := get(gallery.Url)
+	resp, err := get(gallery.Url)
 	if err != nil {
-		if retry {
-			handleGallery(gallery)
-			return
-		} else {
-			updateProgressBar()
-			waitGroup.Done()
-			return
-		}
+		updateProgressBar()
+		waitGroup.Done()
+		return
 	}
-	doc := soup.HTMLParse(resp)
+	doc := soup.HTMLParse(string(resp))
 
 	script := doc.FindAll("script")[2].Text()
 	script = script[21:len(script)-1]
@@ -248,20 +236,10 @@ func handleImage(image Image){
 	fullpath := image.Username + "/" + strconv.Itoa(image.Timestamp) + "_" +strings.Split(image.Url,"/")[len(strings.Split(image.Url,"/")) - 1]
 
 	if _, err := os.Stat(fullpath); os.IsNotExist(err) {
-		resp, e := http.Get(image.Url)
-		if e != nil {
-			time.Sleep(errorDelay * time.Second)
-			handleImage(image)
-			return
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode == 429{
-			time.Sleep(errorDelay * time.Second)
-			handleImage(image)
-			return
-		}
-		if(resp.StatusCode == 404) {
+		resp, err := get(image.Url)
+		if err != nil {
+			updateProgressBar()
+			waitGroup.Done()
 			return
 		}
 
@@ -270,10 +248,8 @@ func handleImage(image Image){
 			log.Fatal(err)
 		}
 		defer file.Close()
-		_, err = io.Copy(file, resp.Body)
-		if err != nil {
-			log.Fatal(err)
-		}
+
+		file.Write(resp)
 		savedImages ++
 	}
 	updateProgressBar()
@@ -291,35 +267,29 @@ func updateProgressBar() {
 }
 
 
-func get(url string)(string, error, bool) {
+func get(url string)([]byte, error) {
 	resp, e := http.Get(url)
 	if e != nil {
+		fmt.Println("Connection Issue")
 		time.Sleep(errorDelay * time.Second)
-		return "",errors.New("Connection Issues"),true
+		return get(url)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode == 429{
+		fmt.Println("Throtteling")
 		time.Sleep(errorDelay * time.Second)
-		return "",errors.New("Throtteling"),true
+		return get(url)
 	}
-	if(resp.StatusCode == 404) {
-		return "",errors.New("Not found"),false
+	if resp.StatusCode == 404 {
+		fmt.Println("Could not find",url)
+		return nil,errors.New("not found")
 	}
 
 	bytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return "", errors.New("Unable to read the response body"),false
+		return nil, errors.New("unable to read the response body")
 	}
-	return string(bytes), nil,false
-}
-
-func checkAndHandleThrottle(s string) {
-
-}
-
-func checkForError(s string)(bool) {
-	return false
+	return bytes, nil
 }
 
 type Page struct {
