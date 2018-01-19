@@ -17,24 +17,23 @@ import (
 	"regexp"
 )
 
-const errorDelay  = 30000
+const errorDelay = 5
 var waitGroup = sync.WaitGroup{}
 var pages = -1
 var interval = -1
 
-//variables just for gui information
+//variables just for user information
 var doneCount = 0
 var savedImages = 0
 
 // Maximum simultanious http connections open at any given time (workerpool size)
-var maxConnections = 3
+var maxConnections = 50
 
 var imageChan = make(chan Image,10000)
 var pageChan = make(chan Page,1000)
 var galleryChan = make(chan Gallery,1000)
 
 var bar *uiprogress.Bar// Add a new bar
-
 
 
 func main() {
@@ -74,7 +73,7 @@ func main() {
 		}
 	}
 
-
+	fmt.Println(">>>SETTINGS LOADED<<<")
 	fmt.Println("Maximum concurrent connections",maxConnections)
 	fmt.Println("Pages to crawl per profile:", pages)
 	fmt.Println("Refreshing interval:", interval, "seconds")
@@ -82,15 +81,15 @@ func main() {
 	if interval > 0 {
 		t := time.NewTicker(time.Duration(interval) * time.Second)
 		for {
-			fmt.Println(">>CRAWLING<<\n\n\n\n")
+			fmt.Println("\n>>>CRAWLING STARTED<<<\n")
 			startCrawling()
-			fmt.Println(">>CRAWLING FINISHED, next crawling will start in " + strconv.Itoa(interval) + " seconds\n\n\n\n<<")
+			fmt.Println(">>>CRAWLING FINISHED, next crawling will start in " + strconv.Itoa(interval) + " seconds\n\n<<<")
 			<-t.C
 		}
 	} else {
-		fmt.Println(">>CRAWLING<<\n\n\n\n")
+		fmt.Println("\n>>>CRAWLING STARTED<<\n")
 		startCrawling()
-		fmt.Println("Crawler finished")
+		fmt.Println("\n>>>CRAWLING FINISHED<<\n")
 	}
 }
 
@@ -114,7 +113,7 @@ func startCrawling() {
 func readAccountsFile()  {
 	b, err := ioutil.ReadFile("accounts.txt")
 	if err != nil {
-		fmt.Print("Couldn't read accounts.txt")
+		fmt.Print("Couldn't read accounts.txt, please provide a file named accounts.txt in the same directory")
 		panic(err)
 	}
 	for _, element := range strings.Split(string(b),",") {
@@ -163,13 +162,19 @@ func workerRoutine(){
 func handlePage(page Page){
 	resp, err := soup.Get(page.Url)
 	if err != nil {
-		fmt.Println("Error in Soup", err)
-		time.Sleep(errorDelay)
+		fmt.Println("Request Error:", err,"Retrying in",errorDelay,"seconds")
+		time.Sleep(errorDelay * time.Second)
 		handlePage(page)
 		return
-		//panic(err)
 	}
 	doc := soup.HTMLParse(resp)
+
+	if(strings.Contains(doc.Find("title").Text(),"Page Not Found")) {
+		fmt.Println("Could not find user:",page.Username)
+		updateProgressBar()
+		waitGroup.Done()
+		return
+	}
 	script := doc.FindAll("script")[2].Text()
 	script = script[21:len(script)-1]
 
@@ -207,11 +212,10 @@ func handlePage(page Page){
 func handleGallery(gallery Gallery){
 	resp, err := soup.Get(gallery.Url)
 	if err != nil {
-		fmt.Println("Error in Soup", err)
-		time.Sleep(errorDelay)
+		fmt.Println("Request Error:", err,"Retrying in",errorDelay,"seconds")
+		time.Sleep(errorDelay * time.Second)
 		handleGallery(gallery)
 		return
-		//panic(err)
 	}
 	doc := soup.HTMLParse(resp)
 	script := doc.FindAll("script")[2].Text()
@@ -242,15 +246,12 @@ func handleImage(image Image){
 	if _, err := os.Stat(fullpath); os.IsNotExist(err) {
 		response, e := http.Get(image.Url)
 		if e != nil {
-			log.Fatal(e)
-		}
-		defer response.Body.Close()
-		if response.Status != "200 OK" {
-			fmt.Println("Error",response.Status)
-			time.Sleep(errorDelay)
+			fmt.Println("Request Error:", err,"Retrying in",errorDelay,"seconds")
+			time.Sleep(errorDelay * time.Second)
 			handleImage(image)
 			return
 		}
+		defer response.Body.Close()
 
 		file, err := os.Create(fullpath)
 		if err != nil {
