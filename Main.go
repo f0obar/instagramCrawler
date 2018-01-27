@@ -17,6 +17,7 @@ import (
 	"errors"
 )
 
+var saveVideos = false
 const errorDelay = 30
 var waitGroup = sync.WaitGroup{}
 var pages = -1
@@ -29,9 +30,10 @@ var savedImages = 0
 // Maximum simultaneously http connections open at any given time (worker pool size)
 var maxConnections = 50
 
-var imageChan = make(chan Image,10000)
 var pageChan = make(chan Page,1000)
-var galleryChan = make(chan Gallery,1000)
+var mediaChan = make(chan Resource,10000)
+var galleryPageChan = make(chan Resource,1000)
+var videoPageChan = make(chan Resource,1000)
 
 var bar *uiprogress.Bar// Add a new bar
 
@@ -70,6 +72,9 @@ func main() {
 			if num, err := strconv.Atoi(processedString); err == nil {
 				pages = num
 			}
+		}
+		if strings.HasPrefix(element, "v") {
+			saveVideos = true
 		}
 	}
 
@@ -139,8 +144,14 @@ func workerRoutine(){
 		default:
 		}
 		select {
-		case gallery := <-galleryChan:
-			handleGallery(gallery)
+		case galleryPage := <-galleryPageChan:
+			handleGalleryPage(galleryPage)
+			continue
+		default:
+		}
+		select {
+		case videoPage := <-videoPageChan:
+			handleVideoPage(videoPage)
 			continue
 		default:
 		}
@@ -148,11 +159,14 @@ func workerRoutine(){
 		case page := <-pageChan:
 			handlePage(page)
 			continue
-		case gallery := <-galleryChan:
-			handleGallery(gallery)
+		case gallery := <-galleryPageChan:
+			handleGalleryPage(gallery)
 			continue
-		case i := <-imageChan:
-			handleImage(i)
+		case video := <-videoPageChan:
+			handleVideoPage(video)
+			continue
+		case m := <-mediaChan:
+			handleMedia(m)
 			continue
 		}
 		break
@@ -160,36 +174,29 @@ func workerRoutine(){
 }
 
 func handlePage(page Page){
-	resp, err := get(page.Url)
+	script, err := getJson(page.Url)
 	if err != nil {
 		updateProgressBar()
 		waitGroup.Done()
 		return
 	}
-	doc := soup.HTMLParse(string(resp))
 
-	script := doc.FindAll("script")[2].Text()
-	script = script[21:len(script)-1]
-
-	var data map[string]interface{}
-	e := json.Unmarshal([]byte(script), &data)
-	if e != nil {
-		panic(e)
-	}
-
-	mainPage := MainPage{}
+	mainPage := JsonMainPage{}
 	json.Unmarshal([]byte(script), &mainPage)
 
 	for _, element := range mainPage.EntryData.ProfilePage[0].User.Media.Nodes {
 		if !element.IsVideo{
 			if element.Typename == "GraphImage" {
 				waitGroup.Add(1)
-				imageChan <- Image{element.DisplaySrc,page.Username,element.Date}
+				mediaChan <- Resource{element.DisplaySrc,page.Username,element.Date}
 			}
 			if element.Typename == "GraphSidecar" {
 				waitGroup.Add(1)
-				galleryChan <- Gallery{"https://www.instagram.com/p/" + element.Code,page.Username,element.Date}
+				galleryPageChan <- Resource{"https://www.instagram.com/p/" + element.Code,page.Username,element.Date}
 			}
+		} else if saveVideos{
+			waitGroup.Add(1)
+			videoPageChan <- Resource{"https://www.instagram.com/p/" + element.Code,page.Username,element.Date}
 		}
 	}
 
@@ -201,42 +208,50 @@ func handlePage(page Page){
 	waitGroup.Done()
 }
 
-func handleGallery(gallery Gallery){
-	resp, err := get(gallery.Url)
+func handleGalleryPage(resource Resource){
+	script, err := getJson(resource.Url)
 	if err != nil {
 		updateProgressBar()
 		waitGroup.Done()
 		return
 	}
-	doc := soup.HTMLParse(string(resp))
 
-	script := doc.FindAll("script")[2].Text()
-	script = script[21:len(script)-1]
-
-	var data map[string]interface{}
-	e := json.Unmarshal([]byte(script), &data)
-	if e != nil {
-		panic(e)
-	}
-
-	page := GalleryPage{}
+	page := JsonGalleryPage{}
 	json.Unmarshal([]byte(script), &page)
 
 	for _, element := range page.EntryData.PostPage[0].Graphql.ShortcodeMedia.EdgeSidecarToChildren.Edges {
 		if element.Node.Typename == "GraphImage" {
 			waitGroup.Add(1)
-			imageChan <- Image{element.Node.DisplaySrc,gallery.Username,gallery.Timestamp}
+			mediaChan <- Resource{element.Node.DisplaySrc, resource.Username, resource.Timestamp}
 		}
 	}
 	updateProgressBar()
 	waitGroup.Done()
 }
 
-func handleImage(image Image){
-	fullpath := image.Username + "/" + strconv.Itoa(image.Timestamp) + "_" +strings.Split(image.Url,"/")[len(strings.Split(image.Url,"/")) - 1]
+func handleVideoPage(resource Resource) {
+	script, err := getJson(resource.Url)
+	if err != nil {
+		updateProgressBar()
+		waitGroup.Done()
+		return
+	}
+
+	page := JsonVideoPage{}
+	json.Unmarshal([]byte(script), &page)
+
+	waitGroup.Add(1)
+	mediaChan <- Resource{page.EntryData.PostPage[0].Graphql.ShortcodeMedia.VideoUrl, resource.Username, resource.Timestamp}
+
+	updateProgressBar()
+	waitGroup.Done()
+}
+
+func handleMedia(resource Resource){
+	fullpath := resource.Username + "/" + strconv.Itoa(resource.Timestamp) + "_" +strings.Split(resource.Url,"/")[len(strings.Split(resource.Url,"/")) - 1]
 
 	if _, err := os.Stat(fullpath); os.IsNotExist(err) {
-		resp, err := get(image.Url)
+		resp, err := get(resource.Url)
 		if err != nil {
 			updateProgressBar()
 			waitGroup.Done()
@@ -261,7 +276,7 @@ func updateProgressBar() {
 	if doneCount == 0 {
 		bar.Set(0)
 	} else {
-		f := float64(doneCount)/float64(len(imageChan) + len(galleryChan) + len(pageChan) + doneCount)
+		f := float64(doneCount)/float64(len(mediaChan) + len(galleryPageChan) + len(pageChan) + len(videoPageChan) + doneCount)
 		bar.Set(int(f * 100))
 	}
 }
@@ -292,25 +307,38 @@ func get(url string)([]byte, error) {
 	return bytes, nil
 }
 
+func getJson(url string)(string,error){
+	resp, err := get(url)
+	if err != nil {
+		return "", err
+	}
+	doc := soup.HTMLParse(string(resp))
+
+	script := doc.FindAll("script")[2].Text()
+	script = script[21:len(script)-1]
+
+	var data map[string]interface{}
+	e := json.Unmarshal([]byte(script), &data)
+	if e != nil {
+		panic(e)
+	}
+	return script,nil
+}
+
 type Page struct {
 	Url string
 	Username string
 	Remaining int
 }
 
-type Gallery struct {
+type Resource struct {
 	Url string
 	Username string
 	Timestamp int
 }
 
-type Image struct {
-	Url string
-	Username string
-	Timestamp int
-}
 
-type MainPage struct {
+type JsonMainPage struct {
 	EntryData struct{
 		ProfilePage []struct{
 			User struct{
@@ -334,7 +362,7 @@ type MainPage struct {
 	} `json:"entry_data"`
 }
 
-type GalleryPage struct {
+type JsonGalleryPage struct {
 	EntryData struct {
 		PostPage []struct {
 			Graphql struct {
@@ -350,6 +378,20 @@ type GalleryPage struct {
 							} `json:"node"`
 						} `json:"edges"`
 					} `json:"edge_sidecar_to_children"`
+				} `json:"shortcode_media"`
+			} `json:"graphql"`
+		} `json:"PostPage"`
+	} `json:"entry_data"`
+}
+
+type JsonVideoPage struct {
+	EntryData struct {
+		PostPage []struct {
+			Graphql struct {
+				ShortcodeMedia struct {
+					Typename string `json:"__typename"`
+					Id       string `json:"id"`
+					VideoUrl string `json:"video_url"`
 				} `json:"shortcode_media"`
 			} `json:"graphql"`
 		} `json:"PostPage"`
