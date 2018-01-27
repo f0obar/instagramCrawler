@@ -82,6 +82,7 @@ func main() {
 	fmt.Println("Maximum concurrent connections",maxConnections)
 	fmt.Println("Pages to crawl per profile:", pages)
 	fmt.Println("Refreshing interval:", interval, "seconds")
+	fmt.Println("Saving Videos:",saveVideos)
 
 	if interval > 0 {
 		t := time.NewTicker(time.Duration(interval) * time.Second)
@@ -130,7 +131,7 @@ func readAccountsFile()  {
 			}
 		}
 		//Adding base page to the que
-		pageChan <- Page{"https://www.instagram.com/" + element + "/",element,pages}
+		pageChan <- Page{"https://www.instagram.com/" + element + "/",element,pages - 1}
 		waitGroup.Add(1)
 	}
 }
