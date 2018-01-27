@@ -220,9 +220,12 @@ func handleGalleryPage(resource Resource){
 	json.Unmarshal([]byte(script), &page)
 
 	for _, element := range page.EntryData.PostPage[0].Graphql.ShortcodeMedia.EdgeSidecarToChildren.Edges {
-		if element.Node.Typename == "GraphImage" {
+		if !element.Node.IsVideo {
 			waitGroup.Add(1)
 			mediaChan <- Resource{element.Node.DisplaySrc, resource.Username, resource.Timestamp}
+		} else if saveVideos {
+			waitGroup.Add(1)
+			mediaChan <- Resource{element.Node.VideoUrl, resource.Username, resource.Timestamp}
 		}
 	}
 	updateProgressBar()
@@ -375,6 +378,7 @@ type JsonGalleryPage struct {
 								MediaPreview string `json:"media_preview"`
 								IsVideo      bool   `json:"is_video"`
 								DisplaySrc   string `json:"display_url"`
+								VideoUrl	 string `json:"video_url"`
 							} `json:"node"`
 						} `json:"edges"`
 					} `json:"edge_sidecar_to_children"`
