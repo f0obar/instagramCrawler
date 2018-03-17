@@ -185,25 +185,25 @@ func handlePage(page Page){
 	mainPage := JsonMainPage{}
 	json.Unmarshal([]byte(script), &mainPage)
 
-	for _, element := range mainPage.EntryData.ProfilePage[0].User.Media.Nodes {
-		if !element.IsVideo{
-			if element.Typename == "GraphImage" {
+	for _, element := range mainPage.EntryData.ProfilePage[0].GraphQL.User.Media.Edges {
+		if !element.Node.IsVideo{
+			if element.Node.Typename == "GraphImage" {
 				waitGroup.Add(1)
-				mediaChan <- Resource{element.DisplaySrc,page.Username,element.Date}
+				mediaChan <- Resource{element.Node.DisplaySrc,page.Username,element.Node.Date}
 			}
-			if element.Typename == "GraphSidecar" {
+			if element.Node.Typename == "GraphSidecar" {
 				waitGroup.Add(1)
-				galleryPageChan <- Resource{"https://www.instagram.com/p/" + element.Code,page.Username,element.Date}
+				galleryPageChan <- Resource{"https://www.instagram.com/p/" + element.Node.Code,page.Username,element.Node.Date}
 			}
 		} else if saveVideos{
 			waitGroup.Add(1)
-			videoPageChan <- Resource{"https://www.instagram.com/p/" + element.Code,page.Username,element.Date}
+			videoPageChan <- Resource{"https://www.instagram.com/p/" + element.Node.Code,page.Username,element.Node.Date}
 		}
 	}
 
-	if page.Remaining != 0 && mainPage.EntryData.ProfilePage[0].User.Media.PageInfo.HasNextPage {
+	if page.Remaining != 0 && mainPage.EntryData.ProfilePage[0].GraphQL.User.Media.PageInfo.HasNextPage {
 		waitGroup.Add(1)
-		pageChan <- Page{"https://www.instagram.com/" + page.Username + "/?max_id=" + mainPage.EntryData.ProfilePage[0].User.Media.Nodes[11].Id,page.Username,page.Remaining - 1}
+		pageChan <- Page{"https://www.instagram.com/" + page.Username + "/?max_id=" + mainPage.EntryData.ProfilePage[0].GraphQL.User.Media.Edges[11].Node.Id,page.Username,page.Remaining - 1}
 	}
 	updateProgressBar()
 	waitGroup.Done()
@@ -345,23 +345,27 @@ type Resource struct {
 type JsonMainPage struct {
 	EntryData struct{
 		ProfilePage []struct{
-			User struct{
-				Media struct{
-					Nodes []struct{
-						Typename string `json:"__typename"`
-						Id string `json:"id"`
-						MediaPreview string `json:"media_preview"`
-						IsVideo bool `json:"is_video"`
-						Code string `json:"code"`
-						Date int `json:"date"`
-						DisplaySrc string `json:"display_src"`
-						Caption string `json:"caption"`
-					} `json:"nodes"`
-					PageInfo struct{
-						HasNextPage bool `json:"has_next_page"`
-					} `json:"page_info"`
-				} `json:"media"`
-			} `json:"user"`
+			GraphQL struct {
+				User struct {
+					Media struct {
+						Edges []struct {
+							Node struct {
+								Typename     string `json:"__typename"`
+								Id           string `json:"id"`
+								MediaPreview string `json:"media_preview"`
+								IsVideo      bool   `json:"is_video"`
+								Code         string `json:"shortcode"`
+								Date         int    `json:"taken_at_timestamp"`
+								DisplaySrc   string `json:"display_url"`
+								//Caption      string `json:"caption"`
+							} `json:"node"`
+						} `json:"edges"`
+						PageInfo struct {
+							HasNextPage bool `json:"has_next_page"`
+						} `json:"page_info"`
+					} `json:"edge_owner_to_timeline_media"`
+				} `json:"user"`
+			} `json:"graphql"`
 		} `json:"ProfilePage"`
 	} `json:"entry_data"`
 }
